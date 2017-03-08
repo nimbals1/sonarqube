@@ -28,7 +28,6 @@ import java.util.Objects;
 import java.util.Set;
 import javax.annotation.CheckForNull;
 import javax.annotation.Nullable;
-import org.apache.commons.lang.RandomStringUtils;
 import org.apache.commons.lang.StringUtils;
 import org.sonar.core.util.UuidFactory;
 import org.sonar.db.DbClient;
@@ -63,7 +62,7 @@ public class QProfileFactory {
     requireNonNull(organization);
     QualityProfileDto profile = db.qualityProfileDao().selectByNameAndLanguage(organization, name.getName(), name.getLanguage(), dbSession);
     if (profile == null) {
-      profile = doCreate(dbSession, organization, name);
+      profile = doCreate(dbSession, organization, name, false);
     }
     return profile;
   }
@@ -77,7 +76,7 @@ public class QProfileFactory {
     requireNonNull(organization);
     QualityProfileDto dto = db.qualityProfileDao().selectByNameAndLanguage(organization, name.getName(), name.getLanguage(), dbSession);
     checkRequest(dto == null, "Quality profile already exists: %s", name);
-    return doCreate(dbSession, organization, name);
+    return doCreate(dbSession, organization, name, false);
   }
 
   /**
@@ -85,8 +84,8 @@ public class QProfileFactory {
    *
    * A DB error will be thrown if the quality profile already exists.
    */
-  public QualityProfileDto create(DbSession dbSession, OrganizationDto organization, QProfileName name) {
-    return doCreate(dbSession, requireNonNull(organization), name);
+  public QualityProfileDto create(DbSession dbSession, OrganizationDto organization, QProfileName name, boolean isDefault) {
+    return doCreate(dbSession, requireNonNull(organization), name, isDefault);
   }
 
   private static OrganizationDto requireNonNull(@Nullable OrganizationDto organization) {
@@ -94,7 +93,7 @@ public class QProfileFactory {
     return organization;
   }
 
-  private QualityProfileDto doCreate(DbSession dbSession, OrganizationDto organization, QProfileName name) {
+  private QualityProfileDto doCreate(DbSession dbSession, OrganizationDto organization, QProfileName name, boolean isDefault) {
     if (StringUtils.isEmpty(name.getName())) {
       throw BadRequestException.create("quality_profiles.profile_name_cant_be_blank");
     }
@@ -103,6 +102,7 @@ public class QProfileFactory {
       .setName(name.getName())
       .setOrganizationUuid(organization.getUuid())
       .setLanguage(name.getLanguage())
+      .setDefault(isDefault)
       .setRulesUpdatedAtAsDate(now);
     db.qualityProfileDao().insert(dbSession, dto);
     return dto;

@@ -192,9 +192,9 @@ public class RegisterQualityProfiles {
    */
   private static boolean ensureAtMostOneDeclaredDefault(Map.Entry<String, List<QualityProfile.Builder>> entry) {
     Set<String> declaredDefaultProfileNames = entry.getValue().stream()
-        .filter(QualityProfile.Builder::isDeclaredDefault)
-        .map(QualityProfile.Builder::getName)
-        .collect(Collectors.toSet());
+      .filter(QualityProfile.Builder::isDeclaredDefault)
+      .map(QualityProfile.Builder::getName)
+      .collect(Collectors.toSet());
     checkState(declaredDefaultProfileNames.size() <= 1, "Several Quality profiles are flagged as default for the language %s: %s", entry.getKey(), declaredDefaultProfileNames);
     return true;
   }
@@ -225,6 +225,48 @@ public class RegisterQualityProfiles {
       }
     }
     return builders.stream().map(QualityProfile.Builder::build).collect(Collectors.toList(builders.size()));
+  }
+
+  private void registerProfilesForLanguage(DbSession session, List<QualityProfile> qualityProfiles, List<ActiveRuleChange> changes) {
+    qualityProfiles.stream()
+      .filter(qp -> shouldRegister(qp.getQProfileName(), session))
+      .forEach(qp -> register(session, qp, changes));
+    session.commit();
+  }
+
+  private void register(DbSession session, QualityProfile qualityProfile, List<ActiveRuleChange> changes) {
+    LOGGER.info("Register profile " + qualityProfile.getQProfileName());
+
+    OrganizationDto organizationDto = dbClient.organizationDao().selectByUuid(session, defaultOrganizationProvider.get().getUuid())
+      .orElseThrow(() -> new IllegalStateException("Failed to retrieve default organization"));
+    QualityProfileDto profileDto = dbClient.qualityProfileDao().selectByNameAndLanguage(organizationDto, qualityProfile.getName(), qualityProfile.getLanguage(), session);
+    if (profileDto != null) {
+      changes.addAll(profileFactory.delete(session, profileDto.getKey(), true));
+    }
+    QualityProfileDto newQProfileDto = profileFactory.create(session, organizationDto, qualityProfile.getQProfileName(), qualityProfile.isDefault());
+    for (org.sonar.api.rules.ActiveRule activeRule : qualityProfile.getActiveRules()) {
+      RuleKey ruleKey = RuleKey.of(activeRule.getRepositoryKey(), activeRule.getRuleKey());
+      RuleActivation activation = new RuleActivation(ruleKey);
+      activation.setSeverity(activeRule.getSeverity() != null ? activeRule.getSeverity().name() : null);
+      for (ActiveRuleParam param : activeRule.getActiveRuleParams()) {
+        activation.setParameter(param.getKey(), param.getValue());
+      }
+      changes.addAll(ruleActivator.activate(session, activation, newQProfileDto));
+    }
+
+    LoadedTemplateDto template = new LoadedTemplateDto(templateKey(qualityProfile.getQProfileName()), LoadedTemplateDto.QUALITY_PROFILE_TYPE);
+    dbClient.loadedTemplateDao().insert(template, session);
+    session.commit();
+  }
+
+  private boolean shouldRegister(QProfileName key, DbSession session) {
+    // check if the profile was already registered in the past
+    return dbClient.loadedTemplateDao()
+      .countByTypeAndKey(LoadedTemplateDto.QUALITY_PROFILE_TYPE, templateKey(key), session) == 0;
+  }
+
+  static String templateKey(QProfileName key) {
+    return lowerCase(key.getLanguage()) + ":" + key.getName();
   }
 
   private static final class QualityProfile {
@@ -306,57 +348,5 @@ public class RegisterQualityProfiles {
         return new QualityProfile(this);
       }
     }
-  }
-
-  private void registerProfilesForLanguage(DbSession session, List<QualityProfile> qualityProfiles, List<ActiveRuleChange> changes) {
-    qualityProfiles
-      .forEach(qualityProfile -> {
-        if (shouldRegister(qualityProfile.getQProfileName(), session)) {
-          register(session, qualityProfile, changes);
-        }
-      });
-    session.commit();
-  }
-
-  private void register(DbSession session, QualityProfile qualityProfile, List<ActiveRuleChange> changes) {
-    LOGGER.info("Register profile " + qualityProfile.getQProfileName());
-
-    OrganizationDto organizationDto = dbClient.organizationDao().selectByUuid(session, defaultOrganizationProvider.get().getUuid())
-      .orElseThrow(() -> new IllegalStateException("Failed to retrieve default organization"));
-    QualityProfileDto profileDto = dbClient.qualityProfileDao().selectByNameAndLanguage(organizationDto, qualityProfile.getName(), qualityProfile.getLanguage(), session);
-    if (profileDto != null) {
-      changes.addAll(profileFactory.delete(session, profileDto.getKey(), true));
-    }
-    QualityProfileDto newQProfileDto = profileFactory.create(session, organizationDto, qualityProfile.getQProfileName(), qualityProfile.isDefault());
-    for (org.sonar.api.rules.ActiveRule activeRule : qualityProfile.getActiveRules()) {
-      RuleKey ruleKey = RuleKey.of(activeRule.getRepositoryKey(), activeRule.getRuleKey());
-      RuleActivation activation = new RuleActivation(ruleKey);
-      activation.setSeverity(activeRule.getSeverity() != null ? activeRule.getSeverity().name() : null);
-      for (ActiveRuleParam param : activeRule.getActiveRuleParams()) {
-        activation.setParameter(param.getKey(), param.getValue());
-      }
-      changes.addAll(ruleActivator.activate(session, activation, newQProfileDto));
-    }
-
-    LoadedTemplateDto template = new LoadedTemplateDto(templateKey(qualityProfile.getQProfileName()), LoadedTemplateDto.QUALITY_PROFILE_TYPE);
-    dbClient.loadedTemplateDao().insert(template, session);
-    session.commit();
-  }
-
-  private static Set<String> defaultProfileNames(Collection<RulesProfile> profiles) {
-    return profiles.stream()
-      .filter(RulesProfile::getDefaultProfile)
-      .map(RulesProfile::getName)
-      .collect(Collectors.toSet());
-  }
-
-  private boolean shouldRegister(QProfileName key, DbSession session) {
-    // check if the profile was already registered in the past
-    return dbClient.loadedTemplateDao()
-      .countByTypeAndKey(LoadedTemplateDto.QUALITY_PROFILE_TYPE, templateKey(key), session) == 0;
-  }
-
-  static String templateKey(QProfileName key) {
-    return lowerCase(key.getLanguage()) + ":" + key.getName();
   }
 }

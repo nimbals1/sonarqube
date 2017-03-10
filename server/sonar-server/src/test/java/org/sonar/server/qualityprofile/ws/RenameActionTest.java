@@ -65,7 +65,7 @@ public class RenameActionTest {
     tester = new WsTester(new QProfilesWs(
       mock(RuleActivationActions.class),
       mock(BulkRuleActivationActions.class),
-      new RenameAction(new QProfileFactory(dbClient, UuidFactoryFast.getInstance()), wsSupport)));
+      new RenameAction(new QProfileFactory(dbClient, UuidFactoryFast.getInstance(), System2.INSTANCE), wsSupport)));
   }
 
   @Test

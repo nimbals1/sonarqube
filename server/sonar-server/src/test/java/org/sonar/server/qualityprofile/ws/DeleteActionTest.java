@@ -80,7 +80,7 @@ public class DeleteActionTest {
       mock(BulkRuleActivationActions.class),
       new DeleteAction(
         new Languages(xoo1, xoo2),
-        new QProfileFactory(dbClient, UuidFactoryFast.getInstance()),
+        new QProfileFactory(dbClient, UuidFactoryFast.getInstance(), System2.INSTANCE),
         dbClient,
         new QProfileWsSupport(dbClient, userSessionRule, defaultOrganizationProvider))));
   }

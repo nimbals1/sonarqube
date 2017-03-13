@@ -374,7 +374,7 @@ public class RegisterQualityProfilesTest {
     return new RegisterQualityProfiles(
       dbClient,
       new QProfileFactory(dbClient, mockedUuidFactory, mockedSystem2),
-      new CachingRuleActivator(mockedSystem2, dbClient, null, new RuleActivatorContextFactory(dbClient), null, null, userSessionRule),
+      new CachingRuleActivator(mockedSystem2, dbClient, null, new CachingRuleActivatorContextFactory(dbClient), null, null, userSessionRule),
       definitions,
       languages,
       mockedActiveRuleIndexer);

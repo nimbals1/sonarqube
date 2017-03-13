@@ -20,6 +20,7 @@
 package org.sonar.server.qualityprofile;
 
 import java.util.Map;
+import org.apache.commons.codec.digest.DigestUtils;
 import org.junit.After;
 import org.junit.Test;
 import org.sonar.api.profiles.ProfileDefinition;
@@ -34,7 +35,6 @@ import org.sonar.api.server.rule.RulesDefinition;
 import org.sonar.api.utils.ValidationMessages;
 import org.sonar.db.DbClient;
 import org.sonar.db.DbSession;
-import org.sonar.db.loadedtemplate.LoadedTemplateDto;
 import org.sonar.db.qualityprofile.ActiveRuleDao;
 import org.sonar.db.qualityprofile.ActiveRuleDto;
 import org.sonar.db.qualityprofile.ActiveRuleKey;
@@ -42,14 +42,19 @@ import org.sonar.db.qualityprofile.ActiveRuleParamDto;
 import org.sonar.db.qualityprofile.QualityProfileDao;
 import org.sonar.db.qualityprofile.QualityProfileDto;
 import org.sonar.server.es.SearchOptions;
+import org.sonar.server.organization.DefaultOrganizationProvider;
 import org.sonar.server.platform.Platform;
 import org.sonar.server.rule.index.RuleIndex;
 import org.sonar.server.rule.index.RuleQuery;
 import org.sonar.server.tester.ServerTester;
 
 import static com.google.common.collect.Lists.newArrayList;
+import static java.lang.String.format;
+import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.apache.commons.lang.StringUtils.lowerCase;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.guava.api.Assertions.assertThat;
+import static org.sonar.db.loadedtemplate.LoadedTemplateDto.QUALITY_PROFILE_TYPE;
 
 // TODO replace this MediumTest by DbTester and EsTester
 public class RegisterQualityProfilesMediumTest {
@@ -214,10 +219,11 @@ public class RegisterQualityProfilesMediumTest {
     tester.start();
 
     dbSession = dbClient().openSession(false);
-    String templateKey = RegisterQualityProfiles.templateKey(new QProfileName("xoo", "Basic"));
-    dbClient().loadedTemplateDao().delete(dbSession, LoadedTemplateDto.QUALITY_PROFILE_TYPE, templateKey);
+    String defaultOrganizationUuid = tester.getContainer().getComponentByType(DefaultOrganizationProvider.class).get().getUuid();
+    String loadedTemplateType = computeLoadedTemplateType(new QProfileName("xoo", "Basic"));
+    dbClient().loadedTemplateDao().delete(dbSession, loadedTemplateType, defaultOrganizationUuid);
     dbSession.commit();
-    assertThat(dbClient().loadedTemplateDao().countByTypeAndKey(LoadedTemplateDto.QUALITY_PROFILE_TYPE, templateKey, dbSession)).isEqualTo(0);
+    assertThat(dbClient().loadedTemplateDao().countByTypeAndKey(loadedTemplateType, defaultOrganizationUuid, dbSession)).isEqualTo(0);
     dbSession.close();
 
     tester.get(Platform.class).restart();
@@ -290,5 +296,10 @@ public class RegisterQualityProfilesMediumTest {
       profile.setDefaultProfile(asDefault);
       return profile;
     }
+  }
+
+  private String computeLoadedTemplateType(QProfileName qProfileName) {
+    String qpIdentifier = lowerCase(qProfileName.getLanguage()) + ":" + qProfileName.getName();
+    return format("%s.%s", QUALITY_PROFILE_TYPE, DigestUtils.md5Hex(qpIdentifier.getBytes(UTF_8)));
   }
 }

@@ -36,6 +36,7 @@ public class DbVersion64 implements DbVersion {
       .add(1606, "Make RULES_PROFILES.ORGANIZATION_UUID and KEE unique", MakeQualityProfileOrganizationUuidAndKeyUnique.class)
       .add(1607, "Clean LOADED_TEMPLATES rows without type", CleanLoadedTemplateOrphans.class)
       .add(1608, "Extend size of column LOADED_TEMPLATES.TEMPLATE_TYPE", ExtendLoadedTemplateTypeColumn.class)
-      .add(1609, "Add index LOADED_TEMPLATES_TYPE", AddIndexLoadedTemplatesType.class);
+      .add(1609, "Add index LOADED_TEMPLATES_TYPE", AddIndexLoadedTemplatesType.class)
+      .add(1610, "Upgrade loaded template entries for quality profiles", UpgradeQualityTemplateLoadedTemplates.class);
   }
 }

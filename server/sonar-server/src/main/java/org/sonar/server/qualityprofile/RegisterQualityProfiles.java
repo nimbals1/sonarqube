@@ -51,7 +51,6 @@ import org.sonar.db.DbSession;
 import org.sonar.db.loadedtemplate.LoadedTemplateDto;
 import org.sonar.db.organization.OrganizationDto;
 import org.sonar.db.qualityprofile.QualityProfileDto;
-import org.sonar.server.organization.DefaultOrganizationProvider;
 import org.sonar.server.qualityprofile.index.ActiveRuleIndexer;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -71,6 +70,7 @@ public class RegisterQualityProfiles {
 
   private static final Logger LOGGER = Loggers.get(RegisterQualityProfiles.class);
   private static final String DEFAULT_PROFILE_NAME = "Sonar way";
+  private static final int PROCESSED_ORGANIZATIONS_BATCH_SIZE = 2000;
 
   private final List<ProfileDefinition> definitions;
   private final DbClient dbClient;
@@ -78,28 +78,24 @@ public class RegisterQualityProfiles {
   private final RuleActivator ruleActivator;
   private final Languages languages;
   private final ActiveRuleIndexer activeRuleIndexer;
-  private final DefaultOrganizationProvider defaultOrganizationProvider;
 
   /**
    * To be kept when no ProfileDefinition are injected
    */
   public RegisterQualityProfiles(DbClient dbClient,
-    QProfileFactory profileFactory, CachingRuleActivator ruleActivator, Languages languages, ActiveRuleIndexer activeRuleIndexer,
-    DefaultOrganizationProvider defaultOrganizationProvider) {
-    this(dbClient, profileFactory, ruleActivator, Collections.emptyList(), languages, activeRuleIndexer, defaultOrganizationProvider);
+    QProfileFactory profileFactory, CachingRuleActivator ruleActivator, Languages languages, ActiveRuleIndexer activeRuleIndexer) {
+    this(dbClient, profileFactory, ruleActivator, Collections.emptyList(), languages, activeRuleIndexer);
   }
 
   public RegisterQualityProfiles(DbClient dbClient,
     QProfileFactory profileFactory, CachingRuleActivator ruleActivator,
-    List<ProfileDefinition> definitions, Languages languages, ActiveRuleIndexer activeRuleIndexer,
-    DefaultOrganizationProvider defaultOrganizationProvider) {
+    List<ProfileDefinition> definitions, Languages languages, ActiveRuleIndexer activeRuleIndexer) {
     this.dbClient = dbClient;
     this.profileFactory = profileFactory;
     this.ruleActivator = ruleActivator;
     this.definitions = definitions;
     this.languages = languages;
     this.activeRuleIndexer = activeRuleIndexer;
-    this.defaultOrganizationProvider = defaultOrganizationProvider;
   }
 
   public void start() {
@@ -117,7 +113,7 @@ public class RegisterQualityProfiles {
     try (DbSession session = dbClient.openSession(false)) {
       List<ActiveRuleChange> changes = new ArrayList<>();
       qualityProfilesByLanguage.entrySet()
-        .forEach(entry -> registerProfilesForLanguage(session, entry.getValue(), changes));
+        .forEach(entry -> registerPerLanguage(session, entry.getValue(), changes));
       activeRuleIndexer.index(changes);
       profiler.stopDebug();
     }
@@ -236,24 +232,33 @@ public class RegisterQualityProfiles {
       .collect(Collectors.toList(builders.size()));
   }
 
-  private void registerProfilesForLanguage(DbSession session, List<QualityProfile> qualityProfiles, List<ActiveRuleChange> changes) {
-    String organizationUuid = defaultOrganizationProvider.get().getUuid();
-    qualityProfiles.stream()
-      .filter(qp -> shouldRegister(session, qp, organizationUuid))
-      .forEach(qp -> register(session, qp, changes));
+  private void registerPerLanguage(DbSession session, List<QualityProfile> qualityProfiles, List<ActiveRuleChange> changes) {
+    qualityProfiles.forEach(qp -> registerPerQualityProfile(session, qp, changes));
     session.commit();
   }
 
-  private void register(DbSession session, QualityProfile qualityProfile, List<ActiveRuleChange> changes) {
-    LOGGER.info("Register profile " + qualityProfile.getQProfileName());
+  private void registerPerQualityProfile(DbSession session, QualityProfile qualityProfile, List<ActiveRuleChange> changes) {
+    LOGGER.debug("Register profile {}", qualityProfile.getQProfileName());
 
-    OrganizationDto organizationDto = dbClient.organizationDao().selectByUuid(session, defaultOrganizationProvider.get().getUuid())
-      .orElseThrow(() -> new IllegalStateException("Failed to retrieve default organization"));
-    QualityProfileDto profileDto = dbClient.qualityProfileDao().selectByNameAndLanguage(organizationDto, qualityProfile.getName(), qualityProfile.getLanguage(), session);
+    List<OrganizationDto> organizationDtos;
+    while (!(organizationDtos = getOrganizationsWithoutQP(session, qualityProfile)).isEmpty()) {
+      organizationDtos.forEach(organization -> registerPerQualityProfileAndOrganization(session, qualityProfile, organization, changes));
+    }
+  }
+
+  private List<OrganizationDto> getOrganizationsWithoutQP(DbSession session, QualityProfile qualityProfile) {
+    return dbClient.organizationDao().selectOrganizationsWithoutLoadedTemplate(session,
+      qualityProfile.getLoadedTemplateType(), 1, PROCESSED_ORGANIZATIONS_BATCH_SIZE);
+  }
+
+  private void registerPerQualityProfileAndOrganization(DbSession session, QualityProfile qualityProfile, OrganizationDto organization, List<ActiveRuleChange> changes) {
+    LOGGER.info("Register profile {} for organization {}", qualityProfile.getQProfileName(), organization.getKey());
+
+    QualityProfileDto profileDto = dbClient.qualityProfileDao().selectByNameAndLanguage(organization, qualityProfile.getName(), qualityProfile.getLanguage(), session);
     if (profileDto != null) {
       changes.addAll(profileFactory.delete(session, profileDto.getKey(), true));
     }
-    QualityProfileDto newQProfileDto = profileFactory.create(session, organizationDto, qualityProfile.getQProfileName(), qualityProfile.isDefault());
+    QualityProfileDto newQProfileDto = profileFactory.create(session, organization, qualityProfile.getQProfileName(), qualityProfile.isDefault());
     for (org.sonar.api.rules.ActiveRule activeRule : qualityProfile.getActiveRules()) {
       RuleKey ruleKey = RuleKey.of(activeRule.getRepositoryKey(), activeRule.getRuleKey());
       RuleActivation activation = new RuleActivation(ruleKey);
@@ -264,15 +269,9 @@ public class RegisterQualityProfiles {
       changes.addAll(ruleActivator.activate(session, activation, newQProfileDto));
     }
 
-    LoadedTemplateDto template = new LoadedTemplateDto(organizationDto.getUuid(), qualityProfile.getLoadedTemplateType());
+    LoadedTemplateDto template = new LoadedTemplateDto(organization.getUuid(), qualityProfile.getLoadedTemplateType());
     dbClient.loadedTemplateDao().insert(template, session);
     session.commit();
-  }
-
-  private boolean shouldRegister(DbSession session, QualityProfile qualityProfile, String organizationUuid) {
-    // check if the profile was already registered in the past
-    return dbClient.loadedTemplateDao()
-      .countByTypeAndKey(qualityProfile.getLoadedTemplateType(), organizationUuid, session) == 0;
   }
 
   private static final class QualityProfile {
